@@ -9,36 +9,62 @@ import channels
 import patterns
 import mixer
 import playlist
+import arrangement
 import plugins
 import general
+from itertools import cycle
 
 #Globals to keep track of
+
+#MODES
 _isSYNTHMODE = False
 _isMIXERMODE = False
-_isCHANNELMODE = False
+_isMIDIMODE = False
 _isPLAYLISTMODE = False
-_isINSERTMODE = False
+_isPLUGINPICKING = False
+_midiMODE = OCHRE_CONTROL
+_midiPage = oneButton
+_isSELECTING = False
+_hasSELECTED = False
+
+#BLUE VALUES
 _blueVal = 0
 _blueMixVal = 0
 _blueChanVal = 0
 _bluePlayVal = 0
+
+#OCHRE VALUES
 _ochreVal = 0
 _ochreMixVal = 0
 _ochreChanVal = 0
 _ochrePlayVal = 0
+
+#GRAY VALUES
 _grayVal = 0
 _grayMixVal = 0
 _grayChanVal = 0
 _grayPlayVal = 0
+
+#ORANGE VALUES
 _orangeVal = 0
 _orangeMixVal = 0
 _orangeChanVal = 0
 _orangePlayVal = 0
+
+#SELECTED VALUES
 _focusedWindow = midi.widPlaylist
+_pianoFullScreen = False
+_scroll_cycle = cycle(SCROLL_SPEED)
+_scrollSpeed = next(_scroll_cycle)
 _selectedMixerTrack = 0
 _selectedInsert = 0
-_selectedPlaylistTrack = 0
+_selectedPlaylistTrack = MIN_PLAYLIST_TRACK
 _selectedRouteTrack = 0
+_selectedGrid = 0
+_selectedPianoGrid = 0
+_songLength = 0
+_songPosition = 0
+_activeSLOTS = []
 
 #-----------------------------------------------------------------------------------------------
 #-------------------------------------------MIDI-STUFF------------------------------------------
@@ -46,7 +72,7 @@ _selectedRouteTrack = 0
 
 def OnInit():
     global _isSYNTHMODE
-    print("Please be in Synth Mode!")
+    print("please be in synth mode")
     _isSYNTHMODE = True
     return
 
@@ -56,6 +82,8 @@ def OnDeInit():
 
 def OnMidiIn(event):
     global _isSYNTHMODE
+    global _focusedWindow
+
     print("----------------------------------")
     print("Status      : " + str(event.status))
     print("Data 1      : " + str(event.data1))
@@ -82,26 +110,29 @@ def OnMidiIn(event):
     if _isSYNTHMODE:
         if event.status == CONTROL_STATUS and event.data1 == CONTROL_KEY:
             _isSYNTHMODE = False
-            print("Swapping to Control Mode!")
+            print("swapping to control mode")
+            ui.setFocused(midi.widChannelRack)
+            ui.showWindow(midi.widChannelRack)
+            _focusedWindow = midi.widChannelRack
             event.handled = True
+            ui.setHintMsg("control mode - channel rack")
             return
         else:
             OnSynthMidiIn(event)
             return
     else:
-        for list in AVAILABLE_BUTTONS:
-            if event.data1 in list:
-                isKeyboard = False
-                break
-        if isKeyboard and event.status != CONTROL_STATUS:
-            print("Keyboard Pressed")
+        #for list in AVAILABLE_BUTTONS:
+            #if event.data1 in list:
+                #isKeyboard = False
+        if event.status != CONTROL_STATUS:
+            print("keyboard pressed")
             return
         else:
             OnControlMidiIn(event)
+            return
 
 def OnSysEx(event):
-    print("Uncaught SysEx Message! Status: " + str(event.status))
-    print("Handling anyways: what did you do lol? " + str(event.data1) + ", " + str(event.data2))
+    print("uncaught sysex message. status: " + str(event.status))
     event.handled = True
     return
 
@@ -111,24 +142,27 @@ def OnSysEx(event):
 #-----------------------------------------------------------------------------------------------
 
 def OnSynthMidiIn(event):
+    global _songPosition
     if event.status in [midi.MIDI_START,midi.MIDI_STOP,midi.MIDI_CONTINUE,midi.MIDI_SYSTEMMESSAGE]:
         if transport.isPlaying():
             if event.status == midi.MIDI_START:
-                print("Shouldn't ever happen")
+                print("shouldn't ever happen")
             elif event.status == midi.MIDI_STOP:
-                print("Pausing playback...")
+                print("pausing playback...")
+                _songPosition = transport.getSongPos(2)
                 transport.start()
             elif event.status == midi.MIDI_CONTINUE:
-                print("Wrong Pause Button")
+                print("wrong pause button")
         else:
             if event.status == midi.MIDI_START:
-                print("Starting playback...")
+                print("starting playback...")
                 transport.start()
             elif event.status == midi.MIDI_STOP:
-                print("Stopping playback...")
+                print("stopping playback...")
                 transport.stop()
+                _songPosition = transport.getSongPos(2)
             elif event.status == midi.MIDI_CONTINUE:
-                print("Continuing playback...")
+                print("continuing playback...")
                 transport.start()
         event.handled = True
     else:
@@ -136,7 +170,7 @@ def OnSynthMidiIn(event):
     return
 
 def OnControlMidiIn(event):
-    global _isCHANNELMODE
+    global _isMIDIMODE
     control = event.data1
     value = event.data2
     if event.status == CONTROL_STATUS:
@@ -149,58 +183,160 @@ def OnControlMidiIn(event):
         elif control in opMACROS:
             handleMacro(control, value)
         elif control in opFOUR:
-            handleFour(control, value)
+            if _isMIDIMODE:
+                print("midi page")
+                handleMidiPage(control)
+            else:
+                handleFour(control, value)
         elif control in opSPECIAL:
             handleSpecial(control, value)
         elif control in opKNOBBUTTON:
             handleKnobButton(control, value)
         elif control in opKNOBS:
-            if _isCHANNELMODE:
-                print("Assignable MIDI")
-                device.processMIDICC(event)
+            if _isMIDIMODE:
+                print("assignable midi")
+                handleChannelMidi(event)
+                return
             else:
                 handleKnobs(control, value)
         else:
-            print("Unrecognized: " + str(control) + ", " + str(value))
-
+            print("unrecognized: " + str(control) + ", " + str(value))
+    
+    event.handled = True
     return
 
 #-----------------------------------------------------------------------------------------------
 #-------------------------------------------Main-Handling---------------------------------------
 #-----------------------------------------------------------------------------------------------
+def handleChannelMidi(event):
+    global _midiMODE
+    global _midiPage
+
+    if _midiMODE == OCHRE_CONTROL:
+        event = setOchreMidi(event)
+        print("ochre control")
+    elif _midiMODE == GRAY_CONTROL:
+        event = setGrayMidi(event)
+        print("gray control")
+    elif _midiMODE == ORANGE_CONTROL:
+        event = setOrangeMidi(event)
+        print("orange control")
+    else:
+        print("unrecognized: " + str(event.data1) + ", " + str(event.data2))
+    
+    if _midiPage == oneButton:
+        print("page 1")
+    elif _midiPage == twoButton:
+        print("page 2")
+        event.data1 += 4
+    elif _midiPage == threeButton:
+        print("page 3")
+        event.data1 += 8
+    elif _midiPage == fourButton:
+        print("page 4")
+        event.data1 += 12
+    else:
+        print("unrecognized: " + str(event.data1) + ", " + str(event.data2))
+
+
+    print("----------------------------------")
+    print("Status      : " + str(event.status))
+    print("Data 1      : " + str(event.data1))
+    print("Data 2      : " + str(event.data2))
+    print("Port        : " + str(event.port))
+    print("Note        : " + str(event.note))
+    print("Velocity    : " + str(event.velocity))
+    print("Pressure    : " + str(event.pressure))
+    print("Prog Num    : " + str(event.progNum))
+    print("Ctrl Num    : " + str(event.controlNum))
+    print("Ctrl Val    : " + str(event.controlVal))
+    print("Pitch Bend  : " + str(event.pitchBend))
+    print("SysEx       : " + str(event.sysex))
+    print("Increment   : " + str(event.isIncrement))
+    print("Res         : " + str(event.res))
+    print("In EV       : " + str(event.inEv))
+    print("Out EV      : " + str(event.outEv))
+    print("MIDI ID     : " + str(event.midiId))
+    print("MIDI CHAN   : " + str(event.midiChan))
+    print("MIDI CHAN EX: " + str(event.midiChanEx))
+    print("----------------------------------")
+
+    return
+
+def handleMidiPage(control):
+    global _midiMODE
+    global _midiPage
+
+    if control == _midiPage:
+        print("same page pressed")
+        return
+    elif control == oneButton:
+        print("midi page 1")
+        _midiPage = oneButton
+        return
+    elif control == twoButton:
+        print("midi page 2")
+        _midiPage = twoButton
+        return
+    elif control == threeButton:
+        print("midi page 3")
+        _midiPage = threeButton
+        return
+    elif control == fourButton:
+        print("midi page 4")
+        _midiPage = fourButton
+        return
+    else:
+        print("unrecognized: " + str(control))
+
+    return
 
 def handleTransport(control, value):
+    global _songPosition
     if value == 0:
         return
     
-    print("Transport")
+    print("transport")
     if transport.isPlaying():
         if control == playButton:
-            print("Wrong Pause Button")
+            print("wrong pause button")
             transport.start()
+            _songPosition = transport.getSongPos(2)
         elif control == stopButton:
-            print("Pausing playback...")
+            print("pausing playback...")
             transport.start()
+            _songPosition = transport.getSongPos(2)
     else:
         if control == playButton:
-            print("Starting playback...")
+            print("starting playback...")
             transport.start()
         elif control == stopButton:
-            print("Returning to start")
+            print("returning to start")
             transport.stop()
+            _songPosition = 0
         elif control == recButton:
-            print("Recording Enabled")
+            print("recording enabled")
             transport.record()
         else:
-            print("Unrecognized: " + str(control) + "," + str(value))
+            print("unrecognized: " + str(control) + "," + str(value))
     return
 
 def handleMacro(control, value):
-    print("Macro button pressed")
+    print("macro button pressed")
     return
 
 def handleFour(control, value):
-    print("Four button pressed")
+    global _isMIDIMODE
+    global _isMIXERMODE
+    global _isPLAYLISTMODE
+    global _focusedWindow
+    if value == 0:
+        return
+    
+    if _focusedWindow == midi.widChannelRack or _focusedWindow == PIANO_ROLL:
+        print("channel four button pressed")
+        handleChannelFour(control, value)
+
     return
 
 def handleEdit(control, value):
@@ -209,58 +345,81 @@ def handleEdit(control, value):
         return
     
     if control == liftButton:
-        print("Cutting...")
+        print("cutting...")
         transport.globalTransport(midi.FPT_Cut, 1)
     elif control == dropButton:
-        print("Pasting...")
+        print("pasting...")
         transport.globalTransport(midi.FPT_Paste, 1)
     elif control == cutButton:
-        print("tool")
-        if _focusedWindow == midi.widPlaylist:
+        print("menu")
+        if _focusedWindow == midi.widPlaylist or _focusedWindow == PIANO_ROLL:
             transport.globalTransport(midi.FPT_Menu, 2)
             return
         transport.globalTransport(midi.FPT_ItemMenu, 2)
     return
 
 def handleSpecial(control, value):
+    global _focusedWindow
     if value == 0:
         return
     
     if control == tempoButton:
-        print("Metronome pressed")
+        print("metronome pressed")
         transport.globalTransport(midi.FPT_Metronome, 1)
     elif control == seqButton:
-        print("Opening Piano Roll")
-        transport.globalTransport(midi.FPT_F7, 1)
+        if _focusedWindow == PIANO_ROLL:
+            print("closing piano roll")
+            transport.globalTransport(midi.FPT_F7, 1)
+            _focusedWindow = midi.widChannelRack
+            ui.setFocused(midi.widChannelRack)
+        else:    
+            print("opening piano roll")
+            _focusedWindow = PIANO_ROLL
+            transport.globalTransport(midi.FPT_F7, 1)
     elif control == micButton:
-        print("Emulating Escape")
-        transport.globalTransport(midi.FPT_Escape, 1)
+        print("panic!")
+        transport.globalTransport(midi.FPT_F12, 1)
+        transport.stop()
+        resetModes()
     elif control == comButton:
-        print("Emulating Enter")
+        print("emulating enter")
         transport.globalTransport(midi.FPT_Enter, 1)
+    elif control == helpButton:
+        print("swapping loop mode")
+        transport.setLoopMode()
     return
 
 def handleControl(control, value):
     global _focusedWindow
+    global _isPLUGINPICKING
 
     if value == 0:
         return
-    print("Control button pressed")    
+
     if control == synthButton:
-        print("Opening Plugin Picker")
-        transport.globalTransport(midi.FPT_F8, 1)
+        if _isPLUGINPICKING:
+            print("closing plugin picker")
+            transport.globalTransport(midi.FPT_F8, 1)
+            _isPLUGINPICKING = False
+        else:
+            print("opening plugin picker")
+            transport.globalTransport(midi.FPT_F8, 1)   
+            _isPLUGINPICKING = True
         return
     elif control == drumButton:
-        print("Focusing Channel Rack")
+        print("focusing channel rack")
         _focusedWindow = midi.widChannelRack
+        ui.setHintMsg("control mode - channel rack")
     elif control == tapeButton:
-        print("Focusing Playlist")
+        print("focusing playlist")
         _focusedWindow = midi.widPlaylist
+        ui.setHintMsg("control mode - playlist")
     elif control == mixerButton:
-        print("Focusing Mixer")
+        print("focusing mixer")
         _focusedWindow = midi.widMixer
+        ui.setHintMsg("control mode - mixer")
     else:
-        print("Unrecognized: " + str(control) + ", " + str(value))
+        print("unrecognized: " + str(control) + ", " + str(value))
     if not ui.getVisible(_focusedWindow):
         ui.showWindow(_focusedWindow)
     ui.setFocused(_focusedWindow)
@@ -270,7 +429,8 @@ def handleControl(control, value):
 def handleKnobButton(control, value):
     if value == 0:
         return
-    print("Knob pressed")
+
+    print("knob pressed")
     if control == blueButton:
         handleBlueButton(control, value)
     elif control == ochreButton:
@@ -280,11 +440,15 @@ def handleKnobButton(control, value):
     elif control == orangeButton:
         handleOrangeButton(control, value)
     else:
-        print("Unrecognized: " + str(control) + ", " + str(value))
+        print("unrecognized: " + str(control) + ", " + str(value))
     return
 
 def handleKnobs(control, value):
-    print("Knob tweaked")
+    global _isPLUGINPICKING
+    print("knob tweaked")
+    if _isPLUGINPICKING:
+        handlePluginPicking(control, value)
+        return
     if control == blueKnob:
         handleBlue(control, value)
     elif control == ochreKnob:
@@ -294,7 +458,7 @@ def handleKnobs(control, value):
     elif control == orangeKnob:
         handleOrange(control, value)
     else:
-        print("Unrecognized: " + str(control) + ", " + str(value))
+        print("unrecognized: " + str(control) + ", " + str(value))  
     return
 
 #-----------------------------------------------------------------------------------------------
@@ -307,45 +471,58 @@ def handleBlue(control, value):
     global _blueChanVal
     global _bluePlayVal
     global _focusedWindow
-    global _isCHANNELMODE
+    global _isMIDIMODE
     global _isMIXERMODE
     global _isPLAYLISTMODE
-    global _isINSERTMODE
     global _selectedMixerTrack
     global _selectedInsert
 
+    if ui.isInPopupMenu():
+        print("in menu entering")
+        handleBlueMenu(value)
+        return
+
     if _isMIXERMODE:
-        if _isINSERTMODE:
-            print("Handling Blue Insert Knob")
-            handleInsertBlueKnob(control, value)
-            return
-        else:
-            print("Setting Volume of Mixer Track: " + str(_selectedMixerTrack))
-            mixer.setTrackVolume(_selectedMixerTrack, value/127)
-            return
-    if _focusedWindow == midi.widPlaylist:
-        print("Handling Blue Playlist Knob")
+        print("handling blue mixer mode knob")
+        #handleInsertBlueKnob(control, value)
+        #print("Setting Volume of Mixer Track: " + str(_selectedMixerTrack))
+        #mixer.setTrackVolume(_selectedMixerTrack, value/127)
+        handleMixerBlueKnob(control, value)
+        return
+    if _isPLAYLISTMODE:
+        print("handling blue playlist mode knob")
+        handlePlaylistModeBlueKnob(control, value)
+        return
+    if _focusedWindow == PIANO_ROLL:
+        print("handling blue piano roll knob")
+        handlePluginPicking(control, value)
+        return
+    elif _focusedWindow == midi.widPlaylist:
+        print("handling blue playlist knob")
         handlePlaylistBlueKnob(control, value)
         return
     if value > _blueVal:
-        print("Jog Blue by 1")
+        print("jog blue by 1")
         _blueVal = value
         ui.jog(JOG_UP)
     elif value < _blueVal:
-        print("Jog Blue by -1")
+        print("jog blue by -1")
         _blueVal = value
         ui.jog(JOG_DOWN)
     elif value == _blueVal:
         if value == MAX_KNOB:
-            print("Jog Blue by 1")
+            print("jog blue by 1")
             ui.jog(JOG_UP)
         elif value == MIN_KNOB:
-            print("Jog Blue by -1")
+            print("jog blue by -1")
             ui.jog(JOG_DOWN) 
         else:
-            print("This shouldn't happen")
+            print("this shouldn't happen")
     else:
-        print("Unrecognized: " + str(control) + ", " + str(value))
+        print("unrecognized: " + str(control) + ", " + str(value))
+    if _focusedWindow == midi.widChannelRack:
+        print("handling blue channel knob")
+        handleChannelBlueKnob(control, value)
     if _focusedWindow == midi.widMixer:
         updateSelected(0)
     return
@@ -356,40 +533,32 @@ def handleOchre(control, value):
     global _ochreChanVal
     global _ochrePlayVal
     global _focusedWindow
-    global _isCHANNELMODE
+    global _isMIDIMODE
     global _isMIXERMODE
     global _isPLAYLISTMODE
     global _selectedMixerTrack
     global _selectedPlaylistTrack
 
-    if _isMIXERMODE:
-        mixer.setTrackPan(_selectedMixerTrack, value/127)
+    if _isPLAYLISTMODE:
+        print("handling ochre playlist mode knob")
+        handlePlaylistModeOchreKnob(control, value)
+        return
+    if _focusedWindow == PIANO_ROLL:
+        print("handling ochre piano roll knob")
+        handleOchrePiano(control, value)
         return
     if _focusedWindow == midi.widPlaylist:
+        print("handling ochre playlist knob")
         handlePlaylistOchreKnob(control, value)
         return
     elif _focusedWindow == midi.widChannelRack:
-        if value > _ochreVal:
-            print("Jog ochre by 1")
-            _ochreVal = value
-            ui.jog2(JOG_UP)
-        elif value < _ochreVal:
-            print("Jog ochre by -1")
-            _ochreVal = value
-            ui.jog2(JOG_DOWN)
-        elif value == _ochreVal:
-            if value == MAX_KNOB:
-                print("Jog ochre by 1")
-                ui.jog2(JOG_UP)
-            elif value == MIN_KNOB:
-                print("Jog ochre by -1")
-                ui.jog2(JOG_DOWN) 
-            else:
-                print("This shouldn't happen")
-        else:
-            print("Unrecognized: " + str(control) + ", " + str(value))
+        print("handling ochre channel knob")
+        handleChannelOchreKnob(control, value)
+        return
     if _focusedWindow == midi.widMixer:
-        updateSelected(0)
+        print("handling ochre mixer knob")
+        handleMixerOchreKnob(control, value)
+        return
     return
 
 def handleGray(control, value):
@@ -398,14 +567,26 @@ def handleGray(control, value):
     global _grayChanVal
     global _grayPlayVal
     global _focusedWindow
-    global _isCHANNELMODE
+    global _isMIDIMODE
     global _isMIXERMODE
     global _isPLAYLISTMODE
     global _selectedMixerTrack
 
-    if _isMIXERMODE:
-        mixer.setTrackStereoSep(_selectedMixerTrack, value/127)
+    if _focusedWindow == PIANO_ROLL:
+        print("handling ochre piano roll knob")
+        handleGrayPiano(value)
         return
+
+    if _focusedWindow == midi.widChannelRack:
+        handleChannelGrayKnob(control, value)
+        return
+    if _focusedWindow == midi.widPlaylist:
+        handlePlaylistGrayKnob(control, value)
+        return
+    if _focusedWindow == midi.widMixer:
+        handleMixerGrayKnob(control, value)
+        return
+    
     return
 
 def handleOrange(control, value):
@@ -414,28 +595,23 @@ def handleOrange(control, value):
     global _orangeChanVal
     global _orangePlayVal
     global _focusedWindow
-    global _isCHANNELMODE
+    global _isMIDIMODE
     global _isMIXERMODE
     global _isPLAYLISTMODE
     global _selectedMixerTrack
 
-    if _isMIXERMODE:
-        if value > _orangeVal:
-            _orangeVal = value
-            orangeMixerKnob(JOG_UP)
-        elif value < _orangeVal:
-            _orangeVal = value
-            orangeMixerKnob(JOG_DOWN)
-        elif value == _orangeVal:
-            if value == MAX_KNOB:
-                orangeMixerKnob(JOG_UP)
-            elif value == MIN_KNOB:
-                orangeMixerKnob(JOG_DOWN)
-            else:
-                print("This shouldn't happen")
-        else:
-            print("Unrecognized: " + str(control) + ", " + str(value))
-    
+    if _focusedWindow == midi.widChannelRack:
+        handleChannelOrangeKnob(control, value)
+        return
+    if _focusedWindow == PIANO_ROLL:
+        handlePianoOrangeKnob(control, value)
+        return
+    if _focusedWindow == midi.widPlaylist:
+        handlePlaylistOrangeKnob(control, value)
+        return
+    if _focusedWindow == midi.widMixer:
+        handleMixerOrangeKnob(control, value)
+        return
     return
 
 #-----------------------------------------------------------------------------------------------
@@ -445,76 +621,121 @@ def handleOrange(control, value):
 def handleBlueButton(control, value):
     global _focusedWindow
     global _isMIXERMODE
-    global _isCHANNELMODE
+    global _isMIDIMODE
     global _isPLAYLISTMODE
+    global _isPLUGINPICKING
     global _selectedRouteTrack
     global _selectedMixerTrack
+    global _pianoFullScreen
 
-    if ui.isInPopupMenu():
-        print("In menu entering")
+    if ui.isInPopupMenu() or _isPLUGINPICKING:
+        print("in menu entering")
+        transport.globalTransport(midi.FPT_Enter, 1)
+        if _isPLUGINPICKING: 
+            ui.setFocused(_focusedWindow)
+        _isPLUGINPICKING = False
+        ui.setHintMsg("menu navigation")
+        return
+    if _focusedWindow == PIANO_ROLL:
+        print("in piano roll full screening")
+        if _pianoFullScreen: _pianoFullScreen = False
+        else: _pianoFullScreen = True
         transport.globalTransport(midi.FPT_Enter, 1)
         return
 
     if _focusedWindow == midi.widChannelRack:
-        if _isCHANNELMODE:
-            print("Channel Mode Disabled")
+        if _isMIDIMODE:
+            print("midi mode disabled")
             channels.showCSForm(channels.selectedChannel(), 0)
-            _isCHANNELMODE = False
+            _isMIDIMODE = False
+            ui.setHintMsg("control mode")
         else:
-            print("Channel Mode Enabled")
+            print("midi mode enabled")
             channels.showCSForm(channels.selectedChannel(), 1)
-            _isCHANNELMODE = True
+            ui.setHintMsg("midi mode")
+            _isMIDIMODE = True
         _isPLAYLISTMODE = False
         _isMIXERMODE = False
+        _isPLUGINPICKING = False
     elif _focusedWindow == midi.widMixer:
         if _isMIXERMODE:
-            print("Mixer Mode Disabled")
+            print("mixer mode disabled")
             _isMIXERMODE = False
+            ui.setFocused(midi.widMixer)
+            ui.setHintMsg("control mode")
         else:
-            print("Mixer Mode Enabled")
+            print("mixer mode enabled")
             _selectedRouteTrack = _selectedMixerTrack
+            buildSlotList(_selectedMixerTrack)
             _isMIXERMODE = True
+            ui.setHintMsg("mixer mode")
         _isPLAYLISTMODE = False
-        _isCHANNELMODE = False
+        _isMIDIMODE = False
+        _isPLUGINPICKING = False
     elif _focusedWindow == midi.widPlaylist:
         if _isPLAYLISTMODE:
-            print("Playlist Mode Disabled")
+            print("playlist mode disabled")
             _isPLAYLISTMODE = False
+            ui.setHintMsg("control mode")
         else:
-            print("Playlist Mode Enabled")
+            print("playlist mode enabled")
             _isPLAYLISTMODE = True
+            ui.setHintMsg("playlist mode")
         _isMIXERMODE = False
-        _isCHANNELMODE = False
+        _isMIDIMODE = False
+        _isPLUGINPICKING = False
     return
 
 def handleOchreButton(control, value):
     global _focusedWindow
     global _selectedMixerTrack
     global _selectedPlaylistTrack
-    global _isINSERTMODE
     global _selectedMixerTrack
+    global _isPLUGINPICKING
+    global _midiMODE
+    global _isMIDIMODE
+    global _isPLAYLISTMODE
+    global _isMIXERMODE
 
-    if ui.isInPopupMenu():
-        print("In menu escaping")
+    if ui.isInPopupMenu() or _isPLUGINPICKING:
+        print("in menu escaping")
         transport.globalTransport(midi.FPT_Escape, 1)
+        _isPLUGINPICKING = False
+        return
+
+    if _isMIDIMODE:
+        print("swapping to ochre control")
+        _midiMODE = OCHRE_CONTROL
+        return
+
+    if _isPLAYLISTMODE:
+        print("adding marker")
+        arrangement.addAutoTimeMarker(arrangement.currentTime(False), patterns.getPatternName(patterns.patternNumber()))
         return
 
     if _isMIXERMODE:
-        print("Swapping to Insert Mode!")
-        _isINSERTMODE = True
-        if plugins.isValid(_selectedMixerTrack, _selectedInsert):
-            print("Valid")
+        print("swapping to midi mode")
+        if _isMIDIMODE:
+            print("midi mode disabled")
+            ui.escape()
+            _isMIDIMODE = False
+            ui.setHintMsg("control mode")
+        else:
+            print("midi mode enabled")
+            ui.setHintMsg("midi mode")
+            _isMIDIMODE = True
+        _isPLAYLISTMODE = False
+        _isMIXERMODE = False
+        _isPLUGINPICKING = False
         return
-
-
     if _focusedWindow == midi.widChannelRack:
-        print("Muting Channel: " + str(channels.selectedChannel()))
+        print("muting channel: " + str(channels.selectedChannel()))
         channels.muteChannel(channels.selectedChannel())
     elif _focusedWindow == midi.widMixer:
-        print("Muting Mixer Track: " + str(_selectedMixerTrack))
+        print("muting mixer track: " + str(_selectedMixerTrack))
         mixer.muteTrack(_selectedMixerTrack)
     elif _focusedWindow == midi.widPlaylist:
-        print("Muting Playlist Track: " + str(_selectedPlaylistTrack))
+        print("muting playlist track: " + str(_selectedPlaylistTrack))
         playlist.muteTrack(_selectedPlaylistTrack)
     return
 
@@ -523,19 +744,25 @@ def handleGrayButton(control, value):
     global _selectedMixerTrack
     global _selectedPlaylistTrack
     global _isMIXERMODE
+    global _midiMODE
+
+    if _isMIDIMODE:
+        print("swapping to gray control")
+        _midiMODE = GRAY_CONTROL
+        return
 
     if _isMIXERMODE:
-        print("Linking Channel: " + str(channels.selectedChannel()) + " to Mixer: " + str(_selectedMixerTrack))
+        print("linking channel: " + str(channels.selectedChannel()) + " to mixer: " + str(_selectedMixerTrack))
         mixer.linkTrackToChannel(midi.ROUTE_ToThis)
         return
     if _focusedWindow == midi.widChannelRack:
-        print("Soloing Channel: " + str(channels.selectedChannel()))
+        print("soloing channel: " + str(channels.selectedChannel()))
         channels.soloChannel(channels.selectedChannel())
     elif _focusedWindow == midi.widMixer:
-        print("Soloing Mixer Track: " + str(_selectedMixerTrack))
+        print("soloing mixer track: " + str(_selectedMixerTrack))
         mixer.soloTrack(_selectedMixerTrack)
     elif _focusedWindow == midi.widPlaylist:
-        print("Soloing Playlist Track: " + str(_selectedPlaylistTrack))
+        print("soloing playlist track: " + str(_selectedPlaylistTrack))
         playlist.soloTrack(_selectedPlaylistTrack)
     return
 
@@ -545,29 +772,65 @@ def handleOrangeButton(control, value):
     global _selectedRouteTrack
     global _selectedPlaylistTrack
     global _isMIXERMODE
+    global _midiMODE
+    global _isSELECTING
+    global _hasSELECTED
+    global _scrollSpeed
+    global _scroll_cycle
+
+    if _isMIDIMODE:
+        print("swapping to orange control")
+        _midiMODE = ORANGE_CONTROL
+        return
+    
+    if _isPLAYLISTMODE:
+        if _isSELECTING:
+            _isSELECTING = False
+            _hasSELECTED = True
+            print("placing live loop end")
+            arrangement.liveSelection(arrangement.currentTime(False), True)
+        else:
+            if _hasSELECTED:
+                print("removing selected region")
+                _hasSELECTED = False
+                arrangement.liveSelection(arrangement.currentTime(False), False)
+                arrangement.liveSelection(arrangement.currentTime(False), True)
+                return
+            _isSELECTING = True
+            print("placing live loop start")
+            arrangement.liveSelection(arrangement.currentTime(False), False)
+        return
 
     if _isMIXERMODE:
+        if _selectedMixerTrack == _selectedRouteTrack: return
         if mixer.getRouteSendActive(_selectedMixerTrack, _selectedRouteTrack):
-            print("Unrouting " + str(_selectedMixerTrack) + " to " + str(_selectedRouteTrack))
+            print("unrouting " + str(_selectedMixerTrack) + " to " + str(_selectedRouteTrack))
             mixer.setRouteTo(_selectedMixerTrack, _selectedRouteTrack, 0)
+            mixer.setRouteTo(_selectedMixerTrack, 0, 1)
         else:
-            print("Routing " + str(_selectedMixerTrack) + " to " + str(_selectedRouteTrack))
+            print("routing " + str(_selectedMixerTrack) + " to " + str(_selectedRouteTrack))
             mixer.setRouteTo(_selectedMixerTrack, _selectedRouteTrack, 1)
+            mixer.setRouteTo(_selectedMixerTrack, 0, 0)
+        _selectedRouteTrack = _selectedMixerTrack
         return
     if _focusedWindow == midi.widChannelRack:
-        channels.soloChannel(channels.selectedChannel())
+        print("adding pattern")
+        handleChannelOrangeButton()
     elif _focusedWindow == midi.widMixer:
-        print("Arming Track: " + str(_selectedMixerTrack) + " for recording")
+        print("arming track: " + str(_selectedMixerTrack) + " for recording")
         mixer.armTrack(_selectedMixerTrack)
     elif _focusedWindow == midi.widPlaylist:
-        playlist.soloTrack(_selectedPlaylistTrack)
+        _scrollSpeed = next(_scroll_cycle)
+        print("changing scroll speed to: " + str(_scrollSpeed))
     return
 
 #-----------------------------------------------------------------------------------------------
-#-----------------------------------PLAYLIST-MODE-KNOB-HANDLING---------------------------------
+#---------------------------------------PLAYLIST-KNOB-HANDLING----------------------------------
 #-----------------------------------------------------------------------------------------------
 
 def handlePlaylistBlueKnob(control, value):
+    global _blueVal
+
     if value > _blueVal:
         _blueVal = value
         bluePlaylistKnob(JOG_UP)
@@ -580,13 +843,39 @@ def handlePlaylistBlueKnob(control, value):
         elif value == MIN_KNOB:
             bluePlaylistKnob(JOG_DOWN)
         else:
-            print("This shouldn't happen")
+            print("this shouldn't happen")
     else:
-        print("Unrecognized: " + str(control) + ", " + str(value))
+        print("unrecognized: " + str(control) + ", " + str(value))
+
+    return
+
+def handlePlaylistModeBlueKnob(control, value):
+    global _blueVal
+
+    if value > _blueVal:
+        _blueVal = value
+        bluePlaylistModeKnob(JOG_UP)
+    elif value < _blueVal:
+        _blueVal = value
+        bluePlaylistModeKnob(JOG_DOWN)
+    elif value == _blueVal:
+        if value == MAX_KNOB:
+            bluePlaylistModeKnob(JOG_UP)
+        elif value == MIN_KNOB:
+            bluePlaylistModeKnob(JOG_DOWN)
+        else:
+            print("this shouldn't happen")
+    else:
+        print("unrecognized: " + str(control) + ", " + str(value))
+
+    return    
 
 def handlePlaylistOchreKnob(control, value):
     global _ochreVal
+    global _songLength
 
+    _songLength = transport.getSongLength(-1)
+    print("length: " + str(_songLength))
     if value > _ochreVal:
         _ochreVal = value
         ochrePlaylistKnob(JOG_UP)
@@ -599,76 +888,392 @@ def handlePlaylistOchreKnob(control, value):
         elif value == MIN_KNOB:
             ochrePlaylistKnob(JOG_DOWN)
         else:
-            print("This shouldn't happen here")
+            print("this shouldn't happen here")
     else:
-        print("Unrecognized: " + str(control) + ", " + str(value))
+        print("unrecognized: " + str(control) + ", " + str(value))
     
     return
 
-def handlePlaylistGrayKnob(control, value):
+def handlePlaylistModeOchreKnob(control, value):
+    global _ochreVal
 
+    if value > _ochreVal:
+        _ochreVal = value
+        ochrePlaylistModeKnob(JOG_UP)
+    elif value < _ochreVal:
+        _ochreVal = value
+        ochrePlaylistModeKnob(JOG_DOWN)
+    elif value == _ochreVal:
+        if value == MAX_KNOB:
+            ochrePlaylistModeKnob(JOG_UP)
+        elif value == MIN_KNOB:
+            ochrePlaylistModeKnob(JOG_DOWN)
+        else:
+            print("this shouldn't happen here")
+    else:
+        print("unrecognized: " + str(control) + ", " + str(value))
+    
+    return
+    
+
+def handlePlaylistGrayKnob(control, value):
+    global _grayVal
+
+    if value > _grayVal:
+        _grayVal = value
+        grayPlaylistKnob(JOG_UP)
+    elif value < _grayVal:
+        _grayVal = value
+        grayPlaylistKnob(JOG_DOWN)
+    elif value == _grayVal:
+        if value == MAX_KNOB:
+            grayPlaylistKnob(JOG_UP)
+        elif value == MIN_KNOB:
+            grayPlaylistKnob(JOG_DOWN)
+        else:
+            print("this shouldn't happen here")
+    else:
+        print("unrecognized: " + str(control) + ", " + str(value))
     return
 
 def handlePlaylistOrangeKnob(control, value):
+    global _orangeVal
 
+    if value > _orangeVal:
+        _orangeVal = value
+        orangePlaylistKnob(JOG_UP)
+    elif value < _orangeVal:
+        _orangeVal = value
+        orangePlaylistKnob(JOG_DOWN)
+    elif value == _orangeVal:
+        if value == MAX_KNOB:
+            orangePlaylistKnob(JOG_UP)
+        elif value == MIN_KNOB:
+            orangePlaylistKnob(JOG_DOWN)
+        else:
+            print("this shouldn't happen here")
+    else:
+        print("unrecognized: " + str(control) + ", " + str(value))
     return
 
 #-----------------------------------------------------------------------------------------------
-#--------------------------------------INSERT-MODE-KNOB-HANDLING--------------------------------
+#-----------------------------------------CHANNEL-KNOB-HANDLING---------------------------------
 #-----------------------------------------------------------------------------------------------
+def handleChannelBlueKnob(control, value):
+    global _selectedGrid
+    ui.crDisplayRect(_selectedGrid, channels.selectedChannel(), 4, 1, 5000)
+    return  
 
-def handleInsertBlueKnob(control, value):
+
+def handleChannelOchreKnob(control, value):
+    global _ochreVal
+    global _selectedGrid
+    if value > _ochreVal:
+        print("jog ochre by 1")
+        _ochreVal = value
+        if _selectedGrid == MAX_GRID_LENGTH:
+            _selectedGrid = 0
+        else:
+            _selectedGrid += 4
+    elif value < _ochreVal:
+        print("jog ochre by -1")
+        _ochreVal = value
+        if _selectedGrid == MIN_GRID_LENGTH:
+            _selectedGrid = 0
+        else:
+            _selectedGrid -= 4
+    elif value == _ochreVal:
+        if value == MAX_KNOB:
+            print("jog ochre by 1")
+            if _selectedGrid == MAX_GRID_LENGTH:
+                _selectedGrid = 0
+            else:
+                _selectedGrid += 4
+        elif value == MIN_KNOB:
+            print("jog ochre by -1")
+            if _selectedGrid == MIN_GRID_LENGTH:
+                _selectedGrid = 0
+            else:
+                _selectedGrid -= 4
+        else:
+            print("this shouldn't happen")
+    else:
+        print("unrecognized: " + str(control) + ", " + str(value))
+    
+    ui.crDisplayRect(_selectedGrid, channels.selectedChannel(), 4, 1, 5000)
+    return
+
+def handleChannelGrayKnob(control, value):
+    global _grayVal
+    _grayVal = value
+
+    print("setting channel volume to: " + str(value))
+    channels.setChannelVolume(channels.selectedChannel(), value/MAX_KNOB)
+
+    return
+
+def handleChannelOrangeKnob(control, value):
+    global _orangeVal
+    
+    if value > _orangeVal:
+        _orangeVal = value
+        orangeChannelKnob(JOG_UP)
+    elif value < _orangeVal:
+        _orangeVal = value
+        orangeChannelKnob(JOG_DOWN)
+    elif value == _orangeVal:
+        if value == MAX_KNOB:
+            orangeChannelKnob(JOG_UP)
+        elif value == MIN_KNOB:
+            orangeChannelKnob(JOG_DOWN)
+        else:
+            print("this shouldn't happen here")
+    else:
+        print("unrecognized: " + str(control) + ", " + str(value))
+
+    #_orangeVal = value
+
+    #print("Setting channel pan to: " + str(value))
+    #channels.setChannelPan(channels.selectedChannel(), value/MAX_KNOB)
+    return
+
+#-----------------------------------------------------------------------------------------------
+#---------------------------------------CHANNEL-BUTTON-HANDLING---------------------------------
+#-----------------------------------------------------------------------------------------------    
+def handleChannelOrangeButton():
+    index = channels.selectedChannel()
+    ui.copy
+    name = channels.getChannelName(index)
+    color = channels.getChannelColor(index)
+    patterns.findFirstNextEmptyPat(midi.FFNEP_DontPromptName)
+    pattern = patterns.patternNumber()
+    patterns.setPatternName(pattern, name)
+    patterns.setPatternColor(pattern, color)
+    patterns.jumpToPattern(pattern)
+    
+    return
+
+
+def handleChannelFour(control, value):
+    global _selectedGrid
+    global _selectedPianoGrid
+    global _pianoFullScreen
+
+    selected = _selectedGrid
+    mult = 1
+
+    if _pianoFullScreen: 
+        selected = _selectedPianoGrid
+        mult = 4
+
+    if control == oneButton:
+        if channels.getGridBit(channels.selectedChannel(), selected):
+            print("grid removed at: " + str(selected))
+            channels.setGridBit(channels.selectedChannel(), selected, 0)
+        else:
+            print("grid added at: " + str(selected))
+            channels.setGridBit(channels.selectedChannel(), selected, 1)
+    elif control == twoButton:
+        if channels.getGridBit(channels.selectedChannel(), selected+(1*mult)):
+            print("grid removed at: " + str(selected))
+            channels.setGridBit(channels.selectedChannel(), selected+(1*mult), 0)
+        else:
+            print("grid added at: " + str(selected))
+            channels.setGridBit(channels.selectedChannel(), selected+(1*mult), 1)
+    elif control == threeButton:
+        if channels.getGridBit(channels.selectedChannel(), selected+(2*mult)):
+            print("grid removed at: " + str(selected))
+            channels.setGridBit(channels.selectedChannel(), selected+(2*mult), 0)
+        else:
+            print("grid added at: " + str(selected))
+            channels.setGridBit(channels.selectedChannel(), selected+(2*mult), 1)
+    elif control == fourButton:
+        if channels.getGridBit(channels.selectedChannel(), selected+(3*mult)):
+            print("grid removed at: " + str(selected))
+            channels.setGridBit(channels.selectedChannel(), selected+(3*mult), 0)
+        else:
+            print("grid added at: " + str(selected))
+            channels.setGridBit(channels.selectedChannel(), selected+(3*mult), 1)
+    else:
+        print("unrecognized: " + str(control) + "," + str(value))
+
+    return
+#-----------------------------------------------------------------------------------------------
+#---------------------------------------MIXER-MODE-KNOB-HANDLING--------------------------------
+#-----------------------------------------------------------------------------------------------    
+def handleMixerBlueKnob(control, value):
     global _blueVal
     global _selectedInsert
 
     if value > _blueVal:
-        print("Jog Blue by 1")
+        print("jog blue by 1")
         _blueVal = value
-
-
+        blueMixerKnob(JOG_UP)
     elif value < _blueVal:
-        print("Jog Blue by -1")
+        print("jog blue by -1")
         _blueVal = value
-        ui.jog(JOG_DOWN)
+        blueMixerKnob(JOG_DOWN)
     elif value == _blueVal:
         if value == MAX_KNOB:
-            print("Jog Blue by 1")
-            ui.jog(JOG_UP)
+            print("jog blue by 1")
+            blueMixerKnob(JOG_UP)
         elif value == MIN_KNOB:
-            print("Jog Blue by -1")
-            ui.jog(JOG_DOWN) 
+            print("jog blue by -1")
+            blueMixerKnob(JOG_DOWN) 
         else:
-            print("This shouldn't happen")
+            print("this shouldn't happen")
     else:
-        print("Unrecognized: " + str(control) + ", " + str(value))
+        print("unrecognized: " + str(control) + ", " + str(value))
     return
 
+def handleMixerOchreKnob(control, value):
+    global _ochreVal
+
+    if value > _ochreVal:
+        _ochreVal = value
+        ochreMixerKnob(JOG_UP, value)
+    elif value < _ochreVal:
+        _ochreVal = value
+        ochreMixerKnob(JOG_DOWN, value)
+    elif value == _ochreVal:
+        if value == MAX_KNOB:
+            ochreMixerKnob(JOG_UP, value)
+        elif value == MIN_KNOB:
+            ochreMixerKnob(JOG_DOWN, value)
+        else:
+            print("this shouldn't happen")
+    else:
+        print("unrecognized: " + str(control) + ", " + str(value))
+    
+    return
+
+def handleMixerGrayKnob(control, value):
+    global _grayVal
+
+    if value > _grayVal:
+        _grayVal = value
+        grayMixerKnob(JOG_UP, value)
+    elif value < _grayVal:
+        _grayVal = value
+        grayMixerKnob(JOG_DOWN, value)
+    elif value == _grayVal:
+        if value == MAX_KNOB:
+            grayMixerKnob(JOG_UP, value)
+        elif value == MIN_KNOB:
+            grayMixerKnob(JOG_DOWN, value)
+        else:
+            print("this shouldn't happen")
+    else:
+        print("unrecognized: " + str(control) + ", " + str(value))
+    
+    return
+
+
+def handleMixerOrangeKnob(control, value):
+    global _orangeVal
+
+    if value > _orangeVal:
+        _orangeVal = value
+        orangeMixerKnob(JOG_UP, value)
+    elif value < _orangeVal:
+        _orangeVal = value
+        orangeMixerKnob(JOG_DOWN, value)
+    elif value == _orangeVal:
+        if value == MAX_KNOB:
+            orangeMixerKnob(JOG_UP, value)
+        elif value == MIN_KNOB:
+            orangeMixerKnob(JOG_DOWN, value)
+        else:
+            print("this shouldn't happen")
+    else:
+        print("unrecognized: " + str(control) + ", " + str(value))
+    
+    return
+
+
 #-----------------------------------------------------------------------------------------------
-#--------------------------------------PLAYLIST-MODE-KNOB---------------------------------------
+#--------------------------------------PLAYLIST-KNOB---------------------------------------
 #-----------------------------------------------------------------------------------------------
 
 def bluePlaylistKnob(change):    
     global _selectedPlaylistTrack
 
-    print("Jog playlist track by: " + str(change))
-    
+    print("jog playlist track by: " + str(change))
+    prev = _selectedPlaylistTrack
     playlist.deselectAll()
     updateSelected(change)
     playlist.selectTrack(_selectedPlaylistTrack)
+    if prev == MIN_PLAYLIST_TRACK and _selectedPlaylistTrack == MAX_PLAYLIST_TRACK:
+        for i in range(1,MAX_PLAYLIST_TRACK-4):
+            transport.globalTransport(midi.FPT_Down, 1)
+    elif prev == MAX_PLAYLIST_TRACK and _selectedPlaylistTrack == MIN_PLAYLIST_TRACK:
+        for i in range(1,MAX_PLAYLIST_TRACK-4):
+            transport.globalTransport(midi.FPT_Up, 1)
+    elif _selectedPlaylistTrack > 5 and change == JOG_UP:
+            transport.globalTransport(midi.FPT_Down, 1)
+    elif _selectedPlaylistTrack > 4 and change == JOG_DOWN:
+            transport.globalTransport(midi.FPT_Up, 1)
 
     return
 
-def ochrePlaylistKnob(change):
-    print("Job playlist by: " + str(change))
+def bluePlaylistModeKnob(change):
+    print("jog playhead by: " + str(change))
     ui.jog(change)
     return
 
-def grayPlaylistKnob(change):
+def ochrePlaylistKnob(change):
+    global _songLength
+    global _songPosition
+    global _scrollSpeed
+    print("jog playlist by: " + str(change))
+    bar = transport.getSongPos(3) + change - 1
+    pos = transport.getSongPos(2) + (change * (general.getRecPPB() * _scrollSpeed))
+    ui.scrollWindow(midi.widPlaylist, bar, 1)
+    transport.setSongPos(pos, 2)
+    _songPosition = pos
+    return
 
+def ochrePlaylistModeKnob(change):
+    print("jumping marker by: " + str(change))
+    arrangement.jumpToMarker(change, False)
+    return
+
+def grayPlaylistKnob(change):
+    print("not implemented")    
     return
 
 def orangePlaylistKnob(change):
+    print("changing playlist zoom by: " + str(change))
+    transport.globalTransport(midi.FPT_HZoomJog, change)
+    return
 
+#-----------------------------------------------------------------------------------------------
+#-----------------------------------------PIANO-ROLL-KNOBS--------------------------------------
+#-----------------------------------------------------------------------------------------------
+
+def handlePianoOrangeKnob(control, value):
+    global _orangeVal
+
+    if value > _orangeVal:
+        _orangeVal = value
+        orangePianoKnob(JOG_UP)
+    elif value < _orangeVal:
+        _orangeVal = value
+        orangePianoKnob(JOG_DOWN)
+    elif value == _orangeVal:
+        if value == MAX_KNOB:
+            orangePianoKnob(JOG_UP)
+        elif value == MIN_KNOB:
+            orangePianoKnob(JOG_DOWN)
+        else:
+            print("this shouldn't happen here")
+    else:
+        print("unrecognized: " + str(control) + ", " + str(value))
+    return
+
+def orangePianoKnob(change):
+    print("zooming piano roll")
+    transport.globalTransport(midi.FPT_HZoomJog, change)
     return
 
 #-----------------------------------------------------------------------------------------------
@@ -676,26 +1281,230 @@ def orangePlaylistKnob(change):
 #-----------------------------------------------------------------------------------------------
 
 def blueMixerKnob(change):
-
+    global _isMIXERMODE
+    global _activeSLOTS
+    
+    if _isMIXERMODE:
+        #for slot in _activeSLOTS:
+        transport.globalTransport(midi.FPT_MixerWindowJog, change)
+    else:
+        print("jogging mixer by: " + str(change))
+        ui.jog(change)
     return
 
-def ochreMixerKnob(change):
-
+def ochreMixerKnob(change, value):
+    if _isMIXERMODE: 
+        print("not implemented" + str(change))
+        return
+    else:
+        print("setting track volume to: " + str(value))
+        mixer.setTrackVolume(_selectedMixerTrack, value/127, 1)
+        return
     return   
 
-def grayMixerKnob(change):
-
+def grayMixerKnob(change, value):
+    if _isMIXERMODE: 
+        print("not implemented" + str(value))
+        mixerNum = mixer.trackNumber()
+        mixerName = mixer.getTrackName(mixerNum) 
+        recEventID = mixer.getTrackPluginId(mixerNum, 0)
+        res = 1/127
+        mixer.automateEvent(recEventID + midi.REC_Mixer_EQ_Gain, change, midi.REC_MIDIController, 0, 1, res)
+        mixer.automateEvent(recEventID + midi.REC_Mixer_EQ_Gain+1, change, midi.REC_MIDIController, 0, 1, res)
+        mixer.automateEvent(recEventID + midi.REC_Mixer_EQ_Gain+2, change, midi.REC_MIDIController, 0, 1, res)
+        mixer.automateEvent(recEventID + midi.REC_Mixer_EQ_Freq, change, midi.REC_MIDIController, 0, 1, res)
+        mixer.automateEvent(recEventID + midi.REC_Mixer_EQ_Freq+1, change, midi.REC_MIDIController, 0, 1, res)
+        mixer.automateEvent(recEventID + midi.REC_Mixer_EQ_Freq+2, change, midi.REC_MIDIController, 0, 1, res)
+        mixer.automateEvent(recEventID + midi.REC_Mixer_EQ_Q, change, midi.REC_MIDIController, 0, 1, res)
+        mixer.automateEvent(recEventID + midi.REC_Mixer_EQ_Q+1, change, midi.REC_MIDIController, 0, 1, res)
+        mixer.automateEvent(recEventID + midi.REC_Mixer_EQ_Q+2, change, midi.REC_MIDIController, 0, 1, res)
+        return
+    else:
+        print("setting track pan to: " + str(value))
+        mixer.setTrackPan(_selectedMixerTrack, normalizePolar(value), 1)
+        return
     return
 
-def orangeMixerKnob(change):
+def orangeMixerKnob(change, value):
     global _selectedRouteTrack
+    global _isMIXERMODE
 
-    print("Jog playlist track by: " + str(change))
-    updateSelectedRoute(change)
-    mixer.selectTrack(_selectedRouteTrack)
+    if _isMIXERMODE: 
+        print("jog mixer track by: " + str(change))
+        updateSelectedRoute(change)
+        mixer.selectTrack(_selectedRouteTrack)
+        return
+    else:
+        print("seperating stereo by: " + str(value))
+        mixer.setTrackStereoSep(_selectedMixerTrack, normalizePolar(value), 1)
+        return
 
+
+def orangeChannelKnob(change):
+    print("changing pattern by: " + str(change))
+    transport.globalTransport(midi.FPT_PatternJog, change)
+
+#-----------------------------------------------------------------------------------------------
+#-----------------------------------------MENU-KNOB-HANDLE--------------------------------------
+#-----------------------------------------------------------------------------------------------
+
+def handleBlueMenu(value):
+    global _blueVal
+    global _selectedInsert
+
+    if value > _blueVal:
+        print("jog blue by 1")
+        _blueVal = value
+        ui.jog(JOG_UP)
+    elif value < _blueVal:
+        print("jog blue by -1")
+        _blueVal = value
+        ui.jog(JOG_DOWN)
+    elif value == _blueVal:
+        if value == MAX_KNOB:
+            print("jog blue by 1")
+            ui.jog(JOG_UP)
+        elif value == MIN_KNOB:
+            print("jog blue by -1")
+            ui.jog(JOG_DOWN) 
+        else:
+            print("this shouldn't happen")
+    else:
+        print("unrecognized: " + str(value))
     return
 
+def handlePluginPicking(control, value):
+
+    if control == blueKnob:
+        bluePluginPicking(value)
+    elif control == ochreKnob:
+        ochrePluginPicking(value)
+    
+    return
+
+def bluePluginPicking(value):
+    global _blueVal
+
+    if value > _blueVal:
+        print("jog blue by 1")
+        _blueVal = value
+        ui.down(1)
+    elif value < _blueVal:
+        print("jog blue by -1")
+        _blueVal = value
+        ui.up(1)
+    elif value == _blueVal:
+        if value == MAX_KNOB:
+            print("jog blue by 1")
+            ui.down(1)
+        elif value == MIN_KNOB:
+            print("jog blue by -1")
+            ui.up(1)
+        else:
+            print("this shouldn't happen")
+    else:
+        print("unrecognized: " + str(value))
+    
+    return
+
+def ochrePluginPicking(value):
+    global _ochreVal
+
+    if value > _ochreVal:
+        print("jog ochre by 1")
+        _ochreVal = value
+        ui.right(1)
+    elif value < _ochreVal:
+        print("jog ochre by -1")
+        _ochreVal = value
+        ui.left(1)
+    elif value == _ochreVal:
+        if value == MAX_KNOB:
+            print("jog ochre by 1")
+            ui.right(1)
+        elif value == MIN_KNOB:
+            print("jog ochre by -1")
+            ui.left(1)
+        else:
+            print("this shouldn't happen")
+    else:
+        print("unrecognized: " + str(value))
+    
+    return
+
+#-----------------------------------------------------------------------------------------------
+#------------------------------------------HANDLE-PIANO-ROLL------------------------------------
+#-----------------------------------------------------------------------------------------------    
+def handleOchrePiano(control, value):
+    global _selectedGrid
+    global _ochreVal
+    global _pianoFullScreen
+    global _selectedPianoGrid
+
+    max_length = patterns.getPatternLength(patterns.patternNumber())
+
+    if value > _ochreVal:
+        print("jog ochre by 1")
+        _ochreVal = value
+        if _pianoFullScreen: transport.globalTransport(midi.FPT_Jog, 1)
+        if _selectedGrid == MAX_GRID_LENGTH:
+            _selectedGrid = 0
+        else:
+            _selectedGrid += 4 
+    elif value < _ochreVal:
+        print("jog ochre by -1")
+        _ochreVal = value
+        if _pianoFullScreen: transport.globalTransport(midi.FPT_Jog, -1)
+        if _selectedGrid != MIN_GRID_LENGTH: _selectedGrid -= 4
+    elif value == _ochreVal:
+        if value == MAX_KNOB:
+            print("jog ochre by 1")
+            if _pianoFullScreen: transport.globalTransport(midi.FPT_Jog, 1)
+            if _selectedGrid == MAX_GRID_LENGTH:
+                _selectedGrid = 0
+            else:
+                 _selectedGrid += 4
+        elif value == MIN_KNOB:
+            print("jog ochre by -1")
+            if _pianoFullScreen: transport.globalTransport(midi.FPT_Jog, -1)
+            if _selectedGrid != MIN_GRID_LENGTH: _selectedGrid -= 4
+        else:
+            print("this shouldn't happen")
+    else:
+        print("unrecognized: " + str(control) + ", " + str(value))
+
+    _selectedPianoGrid = (transport.getSongPos(3) - 1)  * 16
+    ui.crDisplayRect(_selectedGrid, channels.selectedChannel(), 4, 1, 5000) 
+    return
+
+def handleGrayPiano(value):
+    global _grayVal
+    global _pianoFullScreen
+    
+    if value > _grayVal:
+        print("jog gray by 1")
+        _grayVal = value
+        if not _pianoFullScreen: return #transport.globalTransport(midi.FPT_Jog, 1)  
+        else: transport.globalTransport(midi.FPT_MoveJog, 1)
+    elif value < _grayVal:
+        print("jog gray by -1")
+        _grayVal = value
+        if not _pianoFullScreen: return #transport.globalTransport(midi.FPT_Jog, -1)  
+        else: transport.globalTransport(midi.FPT_MoveJog, -1)
+    elif value == _grayVal:
+        if value == MAX_KNOB:
+            print("jog gray by 1")
+            if not _pianoFullScreen: return #transport.globalTransport(midi.FPT_Jog, 1)  
+            else: transport.globalTransport(midi.FPT_MoveJog, 1)
+        elif value == MIN_KNOB:
+            if not _pianoFullScreen: return #transport.globalTransport(midi.FPT_Jog, -1)  
+            else: transport.globalTransport(midi.FPT_MoveJog, -1)
+        else:
+            print("this shouldn't happen")
+    else:
+        print("unrecognized: " + str(value))
+    
+    return
 #-----------------------------------------------------------------------------------------------
 #------------------------------------------UPDATES-UTILS----------------------------------------
 #-----------------------------------------------------------------------------------------------
@@ -724,12 +1533,83 @@ def updateSelectedRoute(change):
 
 def resetModes():
     global _isMIXERMODE
-    global _isCHANNELMODE
+    global _isMIDIMODE
     global _isPLAYLISTMODE
+    global _isPLUGINPICKING
+    global _focusedWindow
+    global _activeSLOTS
 
-    print("Resetting to Control Mode")
+    print("resetting to control mode")
+    
+    if _focusedWindow == PIANO_ROLL:
+        transport.globalTransport(midi.FPT_F7, 1)
+
     _isPLAYLISTMODE = False
-    _isCHANNELMODE = False
+    _isMIDIMODE = False
     _isMIXERMODE = False
+    _isPLUGINPICKING = False
+    _activeSLOTS = []
+
+    return
+
+def setOchreMidi(event):
+    event.midiChan = OCHRE_CHANNEL
+    event.status = 180
+    if event.data1 == blueKnob:
+        event.data1 = OCHRE_CHANNEL+10
+    elif event.data1 == ochreKnob:
+        event.data1 = OCHRE_CHANNEL+11
+    elif event.data1 == grayKnob:
+        event.data1 = OCHRE_CHANNEL+12
+    elif event.data1 == orangeKnob:
+        event.data1 = OCHRE_CHANNEL+13
+    else:
+        print("unrecognized: " + str(event.data1) + ", " + str(event.data2))
+
+    return event
+
+def setGrayMidi(event):
+    event.midiChan = GRAY_CHANNEL
+    event.status = 180
+    if event.data1 == blueKnob:
+        event.data1 = GRAY_CHANNEL+10
+    elif event.data1 == ochreKnob:
+        event.data1 = GRAY_CHANNEL+11
+    elif event.data1 == grayKnob:
+        event.data1 = GRAY_CHANNEL+12
+    elif event.data1 == orangeKnob:
+        event.data1 = GRAY_CHANNEL+13
+    else:
+        print("unrecognized: " + str(event.data1) + ", " + str(event.data2))
+
+    return event
+
+def setOrangeMidi(event):
+    event.midiChan = ORANGE_CHANNEL
+    event.status = 180
+    if event.data1 == blueKnob:
+        event.data1 = ORANGE_CHANNEL+10
+    elif event.data1 == ochreKnob:
+        event.data1 = ORANGE_CHANNEL+11
+    elif event.data1 == grayKnob:
+        event.data1 = ORANGE_CHANNEL+12
+    elif event.data1 == orangeKnob:
+        event.data1 = ORANGE_CHANNEL+13
+    else:
+        print("unrecognized: " + str(event.data1) + ", " + str(event.data2))
+
+    return event
+
+def normalizePolar(value):
+    result = 2 * ((value - 0) / 127) - 1
+    return result
+
+def buildSlotList(index):
+    global _activeSLOTS
+    _activeSLOTS = []
+    for i in range(0,10):
+        if plugins.isValid(index, i):
+            _activeSLOTS.append(i)
+    print("building slot index: " + str(_activeSLOTS))
 
     return
