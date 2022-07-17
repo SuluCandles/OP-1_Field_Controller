@@ -27,6 +27,7 @@ _midiPage = oneButton
 _isSELECTING = False
 _hasSELECTED = False
 _isREWINDING = False
+_isBROWSING = False
 
 #BLUE VALUES
 _blueVal = 0
@@ -327,6 +328,7 @@ def handleTransport(control, value):
 
 def handleMacro(control, value):
     global _isREWINDING
+    global _isBROWSING
     if value == 0:
         return
     print("macro button pressed")
@@ -347,7 +349,13 @@ def handleMacro(control, value):
         print("jogging snap mode")
         transport.globalTransport(midi.FPT_SnapMode, 1)
     elif control == opSix:
-        print("browser? nyi")
+        print("toggling browsing")
+        if _isBROWSING: 
+            _isBROWSING = False
+            ui.setFocused(midi.widChannelRack)
+        else: 
+            ui.setFocused(midi.widBrowser)
+            _isBROWSING = True
     elif control == opSev:
         print("seven")
     elif control == opEit:
@@ -654,18 +662,20 @@ def handleBlueButton(control, value):
     global _isMIDIMODE
     global _isPLAYLISTMODE
     global _isPLUGINPICKING
+    global _isBROWSING
     global _selectedRouteTrack
     global _selectedMixerTrack
     global _pianoFullScreen
     global _eqAmount
     global _eqSpice
 
-    if ui.isInPopupMenu() or _isPLUGINPICKING:
+    if ui.isInPopupMenu() or _isPLUGINPICKING or _isBROWSING:
         print("in menu entering")
         transport.globalTransport(midi.FPT_Enter, 1)
-        if _isPLUGINPICKING: 
+        if _isPLUGINPICKING or _isBROWSING: 
             ui.setFocused(_focusedWindow)
         _isPLUGINPICKING = False
+        _isBROWSING = False
         ui.setHintMsg("menu navigation")
         return
     if _focusedWindow == PIANO_ROLL:
@@ -689,6 +699,7 @@ def handleBlueButton(control, value):
         _isPLAYLISTMODE = False
         _isMIXERMODE = False
         _isPLUGINPICKING = False
+        _isBROWSING = False
     elif _focusedWindow == midi.widMixer:
         if _isMIXERMODE:
             print("mixer mode disabled")
@@ -706,6 +717,7 @@ def handleBlueButton(control, value):
         _isPLAYLISTMODE = False
         _isMIDIMODE = False
         _isPLUGINPICKING = False
+        _isBROWSING = False
     elif _focusedWindow == midi.widPlaylist:
         if _isPLAYLISTMODE:
             print("playlist mode disabled")
@@ -719,6 +731,7 @@ def handleBlueButton(control, value):
         _isMIXERMODE = False
         _isMIDIMODE = False
         _isPLUGINPICKING = False
+        _isBROWSING = False
     return
 
 def handleOchreButton(control, value):
@@ -728,15 +741,17 @@ def handleOchreButton(control, value):
     global _selectedMixerTrack
     global _selectedRouteTrack
     global _isPLUGINPICKING
+    global _isBROWSING
     global _midiMODE
     global _isMIDIMODE
     global _isPLAYLISTMODE
     global _isMIXERMODE
 
-    if ui.isInPopupMenu() or _isPLUGINPICKING:
+    if ui.isInPopupMenu() or _isPLUGINPICKING or _isBROWSING:
         print("in menu escaping")
         transport.globalTransport(midi.FPT_Escape, 1)
         _isPLUGINPICKING = False
+        _isBROWSING = False
         return
 
     if _isMIDIMODE:
@@ -1619,6 +1634,7 @@ def resetModes():
     global _isMIDIMODE
     global _isPLAYLISTMODE
     global _isPLUGINPICKING
+    global _isBROWSING
     global _focusedWindow
     global _activeSLOTS
 
@@ -1631,6 +1647,7 @@ def resetModes():
     _isMIDIMODE = False
     _isMIXERMODE = False
     _isPLUGINPICKING = False
+    _isBROWSING = False
     _activeSLOTS = []
 
     return
