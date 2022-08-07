@@ -1,6 +1,9 @@
-#name= OP-1 Field
+#name= OP-1 Field Objectified
 
 from op1field_constants import *
+from op1field_states import *
+from op1field_channel import ChannelState
+from op1field_synth import SynthMode
 import midi
 import transport
 import device
@@ -13,6 +16,8 @@ import arrangement
 import plugins
 import general
 from itertools import cycle
+import op1field_states
+import op1field_channel
 
 #Globals to keep track of
 
@@ -75,21 +80,18 @@ _eqSpice = 0
 #-------------------------------------------MIDI-STUFF------------------------------------------
 #-----------------------------------------------------------------------------------------------
 
+
+op1field = Controller(SynthMode())
+
 def OnInit():
-    global _isSYNTHMODE
-    print("please be in synth mode")
-    ui.setHintMsg("synth mode")
-    _isSYNTHMODE = True
+    op1field.OnInit()
     return
 
 def OnDeInit():
-    print("goodbye :)")
+    op1field.OnDeInit()
     return
 
 def OnMidiIn(event):
-    global _isSYNTHMODE
-    global _focusedWindow
-
     print("----------------------------------")
     print("Status      : " + str(event.status))
     print("Data 1      : " + str(event.data1))
@@ -111,29 +113,29 @@ def OnMidiIn(event):
     print("MIDI CHAN   : " + str(event.midiChan))
     print("MIDI CHAN EX: " + str(event.midiChanEx))
     print("----------------------------------")
-    if event.status > 200 and not _isSYNTHMODE:
+    if event.status > 200 and not op1field._state == SynthMode():
         print("back to synth mode")
-        _isSYNTHMODE = True
+        op1field.setState(SynthMode())
         ui.setHintMsg("synth mode")
-    if _isSYNTHMODE:
+    if op1field._state == SynthMode():
         if event.status == CONTROL_STATUS and event.data1 == CONTROL_KEY:
-            _isSYNTHMODE = False
             print("swapping to control mode")
             ui.setFocused(midi.widChannelRack)
             ui.showWindow(midi.widChannelRack)
-            _focusedWindow = midi.widChannelRack
+            op1field._focusedWindow = midi.widChannelRack
+            op1field.setState(ChannelState())
             event.handled = True
             ui.setHintMsg("control mode - channel rack")
             return
         else:
-            OnSynthMidiIn(event)
+            op1field.OnMidiIn(event)
             return
     else:
         if event.status != CONTROL_STATUS:
             print("keyboard pressed")
             return
         else:
-            OnControlMidiIn(event)
+            op1field.OnMidiIn(event)
             return
 
 def OnSysEx(event):
@@ -1699,10 +1701,6 @@ def setOrangeMidi(event):
         print("unrecognized: " + str(event.data1) + ", " + str(event.data2))
 
     return event
-
-def normalizePolar(value):
-    result = 2 * ((value - 0) / 127) - 1
-    return result
 
 def buildSlotList(index):
     global _activeSLOTS

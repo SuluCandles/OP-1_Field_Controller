@@ -89,3 +89,7 @@ GRAY_CHANNEL = 40
 ORANGE_CHANNEL = 78
 
 SCROLL_SPEED = [1, .5, .25, .25 * .25]
+
+def normalizePolar(value):
+    result = 2 * ((value - 0) / 127) - 1
+    return result
